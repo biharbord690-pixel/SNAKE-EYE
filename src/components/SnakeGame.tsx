@@ -515,6 +515,22 @@ export const SnakeGame: React.FC<SnakeGameProps> = ({
           />
         </svg>
       </button>
+
+      {/* Elegant Branding Watermark Overlay */}
+      <div className="absolute bottom-6 left-0 right-0 z-20 flex flex-col items-center justify-center pointer-events-auto select-none text-center px-4">
+        <p className="text-[12px] uppercase tracking-[0.25em] text-[#ff7096]/95 font-semibold drop-shadow-[0_2px_4px_rgba(255,10,84,0.3)]">
+          CREATE BY AHIR GAMING
+        </p>
+        <a 
+          href="https://www.instagram.com/ahir_gaming2.0" 
+          target="_blank" 
+          rel="noopener noreferrer"
+          className="mt-1 flex items-center gap-1.5 text-[10px] tracking-wider text-[#ffdada]/60 hover:text-[#ff7096] transition-all duration-300 font-mono cursor-pointer"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-[#ff0a54] animate-pulse"></span>
+          Instagram: <span className="underline font-bold">ahir_gaming2.0</span>
+        </a>
+      </div>
     </div>
   );
 };
