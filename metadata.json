@@ -1,0 +1,10 @@
+{
+  "name": "Snake Eye",
+  "description": "An elegant stealth capture dashboard and retro gaming experience.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
