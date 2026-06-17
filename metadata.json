@@ -1,6 +1,6 @@
 {
   "name": "Snake Eye",
-  "description": "An elegant stealth capture dashboard and retro gaming experience.",
+  "description": "An elegant stealth dashboard and MYRA AI futuristic companion experience.",
   "requestFramePermissions": [
     "camera",
     "microphone",

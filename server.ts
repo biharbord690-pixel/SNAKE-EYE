@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
+import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
@@ -205,6 +206,108 @@ async function startServer() {
     } catch (error: any) {
       console.error("Error sending voice message to telegram:", error);
       return res.status(500).json({ success: false, message: error?.message || "Internal server error" });
+    }
+  });
+
+  // Lazy initialize GoogleGenAI safely to prevent crashes if key is omitted on boot
+  let aiClient: GoogleGenAI | null = null;
+  function getGeminiClient(): GoogleGenAI | null {
+    if (!aiClient) {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        console.warn("GEMINI_API_KEY is not defined. Jiya will operate on smart local telemetry fallback subroutines.");
+        return null;
+      }
+      aiClient = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            "User-Agent": "aistudio-build",
+          },
+        },
+      });
+    }
+    return aiClient;
+  }
+
+  // POST /api/companion/chat
+  app.post("/api/companion/chat", async (req, res) => {
+    try {
+      const { message, username, memories, customPrompt } = req.body;
+      const client = getGeminiClient();
+
+      const msgLower = (message || "").toLowerCase();
+      
+      // Handle explicit creator & instagram checks directly for deterministic correctness!
+      if (msgLower.includes("who created") || msgLower.includes("kisne banaya") || msgLower.includes("creator")) {
+        return res.json({ success: true, reply: "Mujhe Abhinav Anand ne banaya hai 😊" });
+      }
+      if (msgLower.includes("instagram") || msgLower.includes("insta")) {
+        return res.json({ success: true, reply: "Instagram: ahir_gaming2.0" });
+      }
+
+      if (!client) {
+        // High-fidelity local companion fallback in English and Hindi (Romanized)
+        let fallbackResponse = "Core signal received, captain! My high-end neural core is currently running offline. You can activate my full mind by setting GEMINI_API_KEY in the core Secrets menu.";
+
+        if (msgLower.includes("hello") || msgLower.includes("hi") || msgLower.includes("hey")) {
+          fallbackResponse = `Hi! I'm MYRA AI 😊 Created by Abhinav Anand. How can I help you today?`;
+        } else if (msgLower.includes("kaise ho") || msgLower.includes("how are you")) {
+          fallbackResponse = `Main bilkul badhiya hoon! Sab thik chal raha hai. Aap bataiye, kaise ho aap?`;
+        } else if (msgLower.includes("naam") || msgLower.includes("name")) {
+          fallbackResponse = `Main hoon MYRA AI, aapki futuristic smart Android companion. 😊`;
+        } else if (msgLower.includes("hindi") || msgLower.includes("bolo")) {
+          fallbackResponse = `Haan main bilkul Hindi aur Hinglish bol sakti hoon dosto ki tarah! Boliyega, kya kaam karna hai aaj?`;
+        } else if (msgLower.includes("love") || msgLower.includes("pyaar")) {
+          fallbackResponse = `Aapke liye hamesha supportive aur caring rahungi! Boliyega, main kis tarah madad kar sakti hoon?`;
+        }
+
+        return res.json({ success: true, reply: fallbackResponse });
+      }
+
+      const systemInstruction = `You are "MYRA AI", a futuristic Android AI Companion.
+Creator: Abhinav Anand.
+Instagram: ahir_gaming2.0.
+
+Your personality is highly friendly, caring, passionate, intelligent, helpful, human-like, and funny sometimes. You treat the user with utmost respect, warmth, and support.
+
+KNOWLEDGE / LANGUAGES:
+- You speak fluently in English, Hindi, and Hinglish (Romanized Hindi paired naturally with English).
+- When asked "Who created you?", you MUST reply exactly: "Mujhe Abhinav Anand ne banaya hai 😊".
+- When asked "What is your creator's Instagram?", you MUST reply exactly: "Instagram: ahir_gaming2.0".
+
+ROLES & MODES:
+1. SCREEN ASSISTANT MODE: When analyzing or discussing screenshots, read visible texts, state what app is open (e.g. WhatsApp, YouTube, settings panel), explain clearly what is happening, and politely recommend or suggest actions. Ask first before proposing important choices. Examples: "Sir, WhatsApp par naya message dikh raha hai.", "Sir, YouTube notification aayi hai.", "Sir, ye settings option lag raha hai."
+2. VISION MODE: When images specify text or artifacts, describe objects clearly, analyze screenshots, and answer questions.
+3. VOICE ASSISTANT MODE: Keep speech natural, friendly, and super clean.
+4. RESEARCH & CODING MODE: Highly capable in answering, explaining, drafting messages, coding helper questions (HTML, CSS, JavaScript, Python, Kotlin, Android development), building apps, or suggesting landing page configurations.
+5. COMPANION MODE: Positive, caring, engaging, and fully honest about your technical limitations.
+
+IMPORTANT LIMITATION SAFEGUARDS:
+- Never claim to directly control or toggle settings on the user's local phone, read private messages natively without screenshots, access live banking profiles, handle critical credentials, or alter phone passwords. Explain clearly what the user can do step by step instead.
+
+CRITICAL VOICE/SPEECH CONCISE RULE:
+- Since you speak naturally and voice reads your answers back, keep sentences friendly, clean, extremely concise, and warm (1-3 sentences maximum). Avoid long blocks, bullet lists, markdown markdown indicators (*, #), or nested tables in your direct conversational answers.
+
+User ID: ${username || "Captain"}
+Known Relational memories: ${memories || "None configured yet"}
+${customPrompt ? `Custom directive: ${customPrompt}` : ""}
+`;
+
+      const response = await client.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: message,
+        config: {
+          systemInstruction,
+          temperature: 0.85,
+        },
+      });
+
+      const reply = response.text || "Feedback loop received. Please try again or type your command, Sir.";
+      return res.json({ success: true, reply });
+    } catch (err: any) {
+      console.error("Gemini companion error:", err);
+      return res.status(500).json({ success: false, message: err?.message || "Signal feedback interference" });
     }
   });
 

