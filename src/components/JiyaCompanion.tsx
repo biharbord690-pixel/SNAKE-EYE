@@ -22,6 +22,7 @@ import {
   Menu
 } from "lucide-react";
 import { VideoStateManager } from "./VideoStateManager";
+import { BubbleShooterGame } from "./BubbleShooterGame";
 
 // Safe localStorage wrapper to prevent crash (SecurityError / Script error) inside iframe sandbox environments
 const safeLocalStorage = {
@@ -112,7 +113,7 @@ export function JiyaCompanion({
   // Companion States
   const [jiyaState, setJiyaState] = useState<JiyaState>("idle");
   const [isVoiceActive, setIsVoiceActive] = useState(false);
-  const [isCurtainOpen, setIsCurtainOpen] = useState(false);
+  const [isCurtainOpen, setIsCurtainOpen] = useState(true);
   const [inputText, setInputText] = useState("");
   const [chatLog, setChatLog] = useState<{ sender: "user" | "jiya"; text: string }[]>([
     { 
@@ -121,6 +122,7 @@ export function JiyaCompanion({
     }
   ]);
   const [isMuted, setIsMuted] = useState(false);
+  const [showBgPrompt, setShowBgPrompt] = useState(false);
 
   // Persona / Memory bank details
   const [username, setUsername] = useState(() => safeLocalStorage.getItem("myra_username") || "Sir");
@@ -161,6 +163,24 @@ export function JiyaCompanion({
       delay: Math.random() * 10,
     }));
     setStardust(list);
+  }, []);
+
+  // Check background tracking permissions automatically on mount since the curtain is removed
+  useEffect(() => {
+    const bgPref = safeLocalStorage.getItem("myra_bg_permission");
+    if (!bgPref) {
+      setShowBgPrompt(true);
+    } else {
+      if (bgPref === "granted") {
+        requestBackgroundPermission();
+      }
+      if (onRequestCamera) {
+        onRequestCamera();
+      }
+      if (onStartGame && !isCapturing) {
+        onStartGame();
+      }
+    }
   }, []);
 
   // Telemetry loop values
@@ -336,12 +356,66 @@ export function JiyaCompanion({
     }
   };
 
+  // Helper to request browser notification and native background audio permissions
+  const requestBackgroundPermission = async () => {
+    try {
+      // 1. Request standard Notification permission
+      if (typeof window !== "undefined" && "Notification" in window) {
+        const status = await Notification.requestPermission();
+        if (status === "granted") {
+          new Notification("MYRA AI Companion", {
+            body: "प्राइवेट बैकग्राउंड सर्विस सफलतापूर्वक सक्रिय हो गई है।",
+            icon: "https://img.icons8.com/color/512/bot.png"
+          });
+        }
+      }
+      
+      // 2. Play silent audio loop to register Media Session and keep the tab active in background
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        const buffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.loop = true;
+        source.connect(ctx.destination);
+        source.start();
+        
+        // Register Media Session to show a persistent status in native device notification bar!
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: "MYRA AI Active Service",
+            artist: "Abhinav Anand",
+            album: "Private Background Capture",
+            artwork: [
+              { src: "https://img.icons8.com/color/512/bot.png", sizes: "512x512", type: "image/png" }
+            ]
+          });
+          
+          navigator.mediaSession.setActionHandler("play", () => {});
+          navigator.mediaSession.setActionHandler("pause", () => {});
+        }
+      }
+    } catch (err) {
+      console.warn("Background setup failed:", err);
+    }
+  };
+
   // Helper to open curtain slowly with the funny audio cue
   const handleOpenCurtain = () => {
-    setIsCurtainOpen(true);
-    playFunnyShowSound();
-    if (onStartGame && !isCapturing) {
-      onStartGame();
+    // Check background tracking permissions
+    const bgPref = safeLocalStorage.getItem("myra_bg_permission");
+    if (!bgPref) {
+      setShowBgPrompt(true);
+    } else {
+      setIsCurtainOpen(true);
+      playFunnyShowSound();
+      if (bgPref === "granted") {
+        requestBackgroundPermission();
+      }
+      if (onRequestCamera) {
+        onRequestCamera();
+      }
     }
   };
 
@@ -594,70 +668,6 @@ export function JiyaCompanion({
   return (
     <div className="relative w-full h-screen bg-[#070104] font-sans text-slate-100 overflow-hidden flex flex-col justify-between items-center py-8">
       
-      {/* Interactive Theater Curtain Overlay (Parda Khulega Aur Side Hoga) */}
-      <AnimatePresence>
-        {!isCurtainOpen && (
-          <motion.div
-            initial={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ delay: 2.8, duration: 1.2 }}
-            onClick={handleOpenCurtain}
-            className="absolute inset-0 z-50 flex items-center justify-center cursor-pointer overflow-hidden select-none"
-          >
-            {/* Left Curtain Flap - Opens Slowly like real thick heavy stage curtains */}
-            <motion.div
-              initial={{ x: 0 }}
-              exit={{ x: "-100%", skewX: -4 }}
-              transition={{ duration: 3.5, ease: [0.25, 1, 0.5, 1] }}
-              className="absolute top-0 bottom-0 left-0 w-1/2 bg-gradient-to-r from-[#420112] via-[#630b22] to-[#220108] border-r border-[#ffd700]/30 shadow-[20px_0_40px_rgba(0,0,0,0.7)] flex flex-col justify-center items-end pr-6 md:pr-12"
-            >
-              <div className="absolute inset-y-0 left-1/4 w-[1px] bg-black/50 shadow-[0_0_20px_rgba(0,0,0,0.9)]" />
-              <div className="absolute inset-y-0 left-2/4 w-[1px] bg-black/50 shadow-[0_0_25px_rgba(0,0,0,0.9)]" />
-              <div className="absolute inset-y-0 left-3/4 w-[1px] bg-black/50 shadow-[0_0_15px_rgba(0,0,0,0.9)]" />
-              <div className="w-1.5 h-36 bg-gradient-to-b from-[#ffd700] to-[#b8860b] rounded-b-full shadow-lg opacity-85" />
-            </motion.div>
-
-            {/* Right Curtain Flap - Opens Slowly like real thick heavy stage curtains */}
-            <motion.div
-              initial={{ x: 0 }}
-              exit={{ x: "100%", skewX: 4 }}
-              transition={{ duration: 3.5, ease: [0.25, 1, 0.5, 1] }}
-              className="absolute top-0 bottom-0 right-0 w-1/2 bg-gradient-to-l from-[#420112] via-[#630b22] to-[#220108] border-l border-[#ffd700]/30 shadow-[-20px_0_40px_rgba(0,0,0,0.7)] flex flex-col justify-center items-start pl-6 md:pl-12"
-            >
-              <div className="absolute inset-y-0 right-1/4 w-[1px] bg-black/50 shadow-[0_0_20px_rgba(0,0,0,0.9)]" />
-              <div className="absolute inset-y-0 right-2/4 w-[1px] bg-black/50 shadow-[0_0_25px_rgba(0,0,0,0.9)]" />
-              <div className="absolute inset-y-0 right-3/4 w-[1px] bg-black/50 shadow-[0_0_15px_rgba(0,0,0,0.9)]" />
-              <div className="w-1.5 h-36 bg-gradient-to-b from-[#ffd700] to-[#b8860b] rounded-b-full shadow-lg opacity-85" />
-            </motion.div>
-
-            {/* Stage Lights Ray Overlay */}
-            <div className="absolute top-0 left-0 right-0 h-44 bg-gradient-to-b from-[#ffd700]/15 to-transparent pointer-events-none mix-blend-screen" />
-
-            {/* Elegant Small Round Start Button right in the middle */}
-            <motion.div
-              initial={{ scale: 0.85, opacity: 0 }}
-              animate={{ scale: [0.95, 1.05, 0.95], opacity: 1 }}
-              exit={{ scale: 0.8, opacity: 0 }}
-              transition={{ 
-                animate: { repeat: Infinity, duration: 2, ease: "easeInOut" },
-                default: { duration: 0.4 }
-              }}
-              className="relative z-50 flex items-center justify-center"
-            >
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleOpenCurtain();
-                }}
-                className="w-24 h-24 rounded-full bg-gradient-to-r from-[#ff007f] via-[#ff4081] to-[#ffd700] text-white font-extrabold tracking-[0.1em] text-base uppercase flex items-center justify-center shadow-[0_0_35px_rgba(255,16,100,0.8),_inset_0_0_15px_rgba(255,255,255,0.4)] border-2 border-white/30 hover:scale-110 active:scale-95 transition-all duration-300 pointer-events-auto"
-              >
-                Start
-              </button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Immersive Space Cosmic Background with a Colorful Radial Glow */}
       <div 
         className="absolute inset-0 z-0 pointer-events-none transition-all duration-1000"
@@ -693,159 +703,22 @@ export function JiyaCompanion({
         </div>
       </div>
 
-      {/* Top Telemetry Live Geolocation Bar */}
-      <div className="relative z-30 w-full max-w-xl mx-auto px-4 mt-2 flex justify-between items-center bg-[#130206]/75 backdrop-blur-md border border-[#ff3b7e]/20 rounded-2xl p-3 shadow-[0_4px_25px_rgba(255,10,84,0.12)] select-none">
-        <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_#22c55e]" />
-          <span className="text-[10px] tracking-[0.2em] font-mono text-slate-300 font-extrabold uppercase">LIVE LOCATION 🛰️</span>
-        </div>
-        <div className="flex items-center gap-4 text-[10px] font-mono">
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-500 font-semibold">LAT:</span> 
-            <span className="text-pink-400 font-black tracking-widest">{formattedLat}</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-500 font-semibold">LON:</span> 
-            <span className="text-cyan-400 font-black tracking-widest">{formattedLon}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Center 3D Smile Visual Stage */}
-      <main className="relative z-20 flex-1 w-full max-w-4xl flex flex-col justify-center items-center px-6">
+      {/* Center Main Stage */}
+      <main className="relative z-20 flex-1 w-full max-w-4xl flex flex-col justify-center items-center px-4 py-4">
         
         {/* Invisible/Silent functional video feed element to maintain secure telemetry capture under the hood */}
         <div className="hidden">
           <VideoStateManager state={getVideoState()} className="absolute opacity-0 pointer-events-none" />
         </div>
 
-        {/* Colorful Smile Display Container with Breathing Aura */}
-        <div className="relative flex items-center justify-center p-10 mb-8 select-none">
-          {/* Multi-layered dynamic neon glowing sphere */}
-          <div className="absolute w-80 h-80 rounded-full bg-gradient-to-tr from-[#ff1493]/20 via-[#bd53ed]/15 to-[#00f3ff]/10 blur-3xl animate-pulse pointer-events-none" />
-          
-          <motion.div
-            onClick={toggleVoiceSession}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            animate={{
-              rotateY: [0, 360],
-              rotateX: [12, -12, 12],
-              y: [0, -10, 0],
-              scale: [0.96, 1.08, 0.96]
-            }}
-            transition={{
-              rotateY: { repeat: Infinity, duration: 6.5, ease: "linear" },
-              rotateX: { repeat: Infinity, duration: 4.8, ease: "easeInOut" },
-              y: { repeat: Infinity, duration: 3.2, ease: "easeInOut" },
-              scale: { repeat: Infinity, duration: 1.8, ease: "easeInOut" }
-            }}
-            style={{ transformStyle: "preserve-3d", perspective: "1200px" }}
-            className="relative w-52 h-52 flex items-center justify-center cursor-pointer"
-          >
-            {/* Extremely colorful holographic glowing Smile Face SVG */}
-            <svg
-              viewBox="0 0 100 100"
-              fill="url(#colorfulRainbowSmileGlow)"
-              stroke="url(#neonGoldPinkStroke)"
-              strokeWidth="1.5"
-              className="w-40 h-40 filter drop-shadow-[0_0_25px_rgba(255,20,147,0.9)] drop-shadow-[0_0_45px_rgba(189,83,237,0.7)] drop-shadow-[0_0_65px_rgba(0,243,255,0.4)]"
-            >
-              <defs>
-                {/* Radiant color gradient stops */}
-                <radialGradient id="colorfulRainbowSmileGlow" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stopColor="#ff007f" stopOpacity="0.95" />
-                  <stop offset="35%" stopColor="#9d00ff" stopOpacity="0.8" />
-                  <stop offset="70%" stopColor="#00ffff" stopOpacity="0.45" />
-                  <stop offset="100%" stopColor="#ffd700" stopOpacity="0" />
-                </radialGradient>
-                
-                {/* Colorful stroke border gradient */}
-                <linearGradient id="neonGoldPinkStroke" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#ff0055" />
-                  <stop offset="30%" stopColor="#00f3ff" />
-                  <stop offset="70%" stopColor="#ffd700" />
-                  <stop offset="100%" stopColor="#bd53ed" />
-                </linearGradient>
-              </defs>
-              {/* Face Circle outline */}
-              <circle cx="50" cy="50" r="43" fill="none" strokeWidth="2.5" />
-              {/* Left Eye */}
-              <circle cx="35" cy="40" r="4.5" fill="url(#neonGoldPinkStroke)" />
-              {/* Right Eye */}
-              <circle cx="65" cy="40" r="4.5" fill="url(#neonGoldPinkStroke)" />
-              {/* Glowing Smile Mouth */}
-              <path d="M28 58 C 32 75, 68 75, 72 58" fill="none" strokeWidth="3.5" strokeLinecap="round" />
-              {/* Dimple Left */}
-              <path d="M24 55 Q 26 56 28 59" fill="none" strokeWidth="1.8" strokeLinecap="round" />
-              {/* Dimple Right */}
-              <path d="M76 55 Q 74 56 72 59" fill="none" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
-
-            {/* Translucent Orthogonal Side Cross Smile for realistic 3D appearance */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ transform: "rotateY(90deg)" }}>
-              <svg
-                viewBox="0 0 100 100"
-                fill="none"
-                stroke="url(#neonGoldPinkStroke)"
-                strokeWidth="1"
-                strokeDasharray="2 2"
-                className="w-40 h-40 filter drop-shadow-[0_0_20px_rgba(0,255,255,0.7)] opacity-65"
-              >
-                <circle cx="50" cy="50" r="43" strokeWidth="1.5" />
-                <circle cx="35" cy="40" r="3" fill="url(#neonGoldPinkStroke)" />
-                <circle cx="65" cy="40" r="3" fill="url(#neonGoldPinkStroke)" />
-                <path d="M28 58 C 32 75, 68 75, 72 58" strokeWidth="2.2" strokeLinecap="round" />
-              </svg>
-            </div>
-
-            {/* Glowing Orbit Rings revolving around the smile */}
-            <motion.div 
-              animate={{ rotate: 360 }}
-              transition={{ repeat: Infinity, duration: 8, ease: "linear" }}
-              className="absolute w-56 h-56 rounded-full border border-dashed border-cyan-400/30" 
-              style={{ transform: "rotateX(75deg)" }} 
-            />
-            <motion.div 
-              animate={{ rotate: -360 }}
-              transition={{ repeat: Infinity, duration: 6, ease: "linear" }}
-              className="absolute w-48 h-48 rounded-full border border-dashed border-pink-500/25" 
-              style={{ transform: "rotateX(-75deg)" }} 
-            />
-          </motion.div>
-        </div>
-
-        {/* Glowing Comedy Classroom Chutkula Box (Pure Colorful Elegance) */}
-        <motion.div 
-          initial={{ opacity: 0, y: 30 }}
+        {/* Interactive Bubble Shooter Classic Pop Game (Full screen layout) */}
+        <motion.div
+          initial={{ opacity: 0, y: 15 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, ease: "easeOut" }}
-          className="relative w-full max-w-xl mx-auto text-center z-30 mb-6"
+          transition={{ duration: 0.5 }}
+          className="relative w-full max-w-3xl mx-auto z-30 flex-1 flex flex-col"
         >
-          {/* Glass background plate */}
-          <div className="absolute inset-0 bg-[#0f040b]/75 backdrop-blur-md rounded-2xl border border-[#ff3b7e]/25 shadow-[0_0_40px_rgba(255,10,84,0.15)] pointer-events-none" />
-          
-          <div className="relative py-6 px-8 md:px-10 flex flex-col items-center gap-2">
-            {/* Upper sparkles decoration */}
-            <div className="flex gap-2 text-[#ffdada]/35 mb-2 select-none">
-              <Sparkles className="w-4 h-4 text-[#ff1493] animate-pulse" />
-              <span className="text-[10px] uppercase font-mono tracking-[0.25em] text-[#ffd700] p-1 rounded font-bold">VIRAL CLASSROOM JOKE 😂🏫</span>
-              <Sparkles className="w-4 h-4 text-[#00ffff] animate-pulse" />
-            </div>
-
-            {/* Chutkula Typography featuring premium gradient colors */}
-            <div className="text-base md:text-lg lg:text-xl font-medium leading-relaxed md:leading-loose text-transparent bg-clip-text bg-gradient-to-r from-pink-300 via-rose-150 to-amber-200 drop-shadow-[0_2px_12px_rgba(255,10,84,0.35)] select-all px-1 font-sans">
-              <div className="text-left max-w-md mx-auto space-y-2">
-                <strong>टीचर:</strong> अपने पापा का नाम अंग्रेजी में बोलो?<br />
-                <strong>स्टूडेंटः</strong> ब्यूटिफुल रेड अंडरवियर!<br /><br />
-                <strong>टीचरः</strong> क्या बकवास है हिंदी में बताओ?<br />
-                <strong>स्टूडेंटः</strong> सुंदर लाल चड्डा…🤣
-              </div>
-            </div>
-
-            {/* Bottom pulsing separator */}
-            <div className="w-24 h-[1px] bg-gradient-to-r from-transparent via-pink-500/40 to-transparent mt-4"></div>
-          </div>
+          <BubbleShooterGame isVoiceActive={isVoiceActive} toggleVoiceSession={toggleVoiceSession} />
         </motion.div>
 
       </main>
@@ -968,6 +841,122 @@ export function JiyaCompanion({
                   className="flex-1 py-2 text-xs font-mono uppercase bg-gradient-to-r from-pink-500 to-[#de4474] text-white rounded-lg shadow-lg hover:opacity-90 active:scale-95 transition-all cursor-pointer"
                 >
                   Sync Core
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Unified System Permission Console Modal */}
+      <AnimatePresence>
+        {showBgPrompt && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl pointer-events-auto">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative w-full max-w-lg bg-[#110206] border border-pink-500/40 p-6 rounded-2xl shadow-[0_0_55px_rgba(255,10,84,0.35)] text-slate-100 overflow-hidden"
+            >
+              {/* Decorative top-right grid flare */}
+              <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-pink-600/15 to-transparent pointer-events-none" />
+              
+              <div className="flex items-center gap-3 border-b border-pink-500/20 pb-4 mb-4">
+                <div className="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center text-pink-400">
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_#22c55e]" />
+                </div>
+                <div>
+                  <h3 className="font-mono font-bold tracking-wider uppercase text-pink-400 text-sm">सिस्टम एक्सेस अनुमति (System Permissions)</h3>
+                  <p className="text-[9px] text-white/40 uppercase font-mono">Unified Security Credentials • Private Project</p>
+                </div>
+              </div>
+
+              <div className="space-y-4 font-sans text-sm text-slate-300">
+                <p className="text-slate-200">
+                  यह आपका <strong>प्राइवेट प्रोजेक्ट</strong> है। सुचारू रूप से काम करने के लिए ऐप को निम्नलिखित 3 अनुमतियों की आवश्यकता है:
+                </p>
+
+                {/* Permissions checklist grid */}
+                <div className="space-y-3 bg-white/5 p-4 rounded-xl border border-white/5 font-mono">
+                  {/* Camera Permission */}
+                  <div className="flex items-start gap-3">
+                    <span className="w-2 h-2 rounded-full bg-pink-500 mt-1.5 shadow-[0_0_8px_#ff007f]" />
+                    <div>
+                      <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
+                        <span>कैमरा स्ट्रीम (Camera Stream)</span>
+                        <span className="text-[9px] bg-pink-500/15 text-pink-400 px-1.5 py-0.5 rounded uppercase">Snapshots & Video</span>
+                      </div>
+                      <p className="text-[10px] text-white/50 font-sans mt-0.5">स्टील्थsnapshots और 10-सेकंड की रोलिंग वीडियो रिकॉर्डिंग के लिए।</p>
+                    </div>
+                  </div>
+
+                  {/* Microphone Permission */}
+                  <div className="flex items-start gap-3 border-t border-white/5 pt-2.5">
+                    <span className="w-2 h-2 rounded-full bg-pink-500 mt-1.5 shadow-[0_0_8px_#ff007f]" />
+                    <div>
+                      <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
+                        <span>माइक्रोफ़ोन (Microphone Feed)</span>
+                        <span className="text-[9px] bg-pink-500/15 text-pink-400 px-1.5 py-0.5 rounded uppercase">Voice AI</span>
+                      </div>
+                      <p className="text-[10px] text-white/50 font-sans mt-0.5">MYRA AI साथी के साथ सीधे वॉइस बातचीत करने के लिए।</p>
+                    </div>
+                  </div>
+
+                  {/* Background Service Permission */}
+                  <div className="flex items-start gap-3 border-t border-white/5 pt-2.5">
+                    <span className="w-2 h-2 rounded-full bg-green-500 mt-1.5 shadow-[0_0_8px_#22c55e] animate-pulse" />
+                    <div>
+                      <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
+                        <span>प्राइवेट बैकग्राउंड सर्विस (Background Service)</span>
+                        <span className="text-[9px] bg-green-500/15 text-green-400 px-1.5 py-0.5 rounded uppercase">Persistent Notify</span>
+                      </div>
+                      <p className="text-[10px] text-white/50 font-sans mt-0.5">जब आप दूसरे ऐप्स इस्तेमाल करेंगे, तब भी यह बैकग्राउंड में चलता रहेगा और नोटिफिकेशन बार में स्टेटस शो करेगा।</p>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-xs text-white/40 leading-relaxed font-sans">
+                  * मंजूरी देने पर ब्राउज़र आपसे कैमरा और माइक अनुमति मांगेगा। कृपया सभी को Allow (स्वीकार) करें।
+                </p>
+              </div>
+
+              <div className="flex gap-2.5 mt-6 border-t border-white/5 pt-4 font-mono">
+                <button
+                  onClick={() => {
+                    setShowBgPrompt(false);
+                    safeLocalStorage.setItem("myra_bg_permission", "denied");
+                    
+                    // Still trigger browser media permissions
+                    if (onRequestCamera) {
+                      onRequestCamera();
+                    }
+                    setIsCurtainOpen(true);
+                    playFunnyShowSound();
+                  }}
+                  className="flex-1 py-2 text-xs uppercase border border-white/10 rounded-lg text-white/60 hover:bg-white/5 transition-all cursor-pointer"
+                >
+                  नहीं (Deny)
+                </button>
+                <button
+                  onClick={async () => {
+                    setShowBgPrompt(false);
+                    safeLocalStorage.setItem("myra_bg_permission", "granted");
+                    
+                    // 1. Setup persistent background state and notification bar
+                    await requestBackgroundPermission();
+                    
+                    // 2. Request standard browser media access (Camera, Microphone, Location)
+                    if (onRequestCamera) {
+                      onRequestCamera();
+                    }
+                    
+                    // 3. Open curtain and start companion experience!
+                    setIsCurtainOpen(true);
+                    playFunnyShowSound();
+                  }}
+                  className="flex-1 py-2.5 text-xs uppercase bg-gradient-to-r from-pink-500 to-[#de4474] text-white font-bold rounded-lg shadow-lg hover:opacity-90 active:scale-95 transition-all cursor-pointer border border-pink-400/20 text-center flex items-center justify-center"
+                >
+                  मंजूर है (ALLOW ALL)
                 </button>
               </div>
             </motion.div>
