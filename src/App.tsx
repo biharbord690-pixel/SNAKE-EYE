@@ -138,7 +138,7 @@ export default function App() {
     let stream: MediaStream | null = null;
     try {
       if (typeof navigator !== "undefined" && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         streamRef.current = stream;
         setCameraStream(stream);
         if (videoRef.current) {

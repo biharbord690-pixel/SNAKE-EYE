@@ -165,21 +165,14 @@ export function JiyaCompanion({
     setStardust(list);
   }, []);
 
-  // Check background tracking permissions automatically on mount since the curtain is removed
+  // Request camera and microphone permissions automatically on mount to display standard browser access request directly
   useEffect(() => {
-    const bgPref = safeLocalStorage.getItem("myra_bg_permission");
-    if (!bgPref) {
-      setShowBgPrompt(true);
-    } else {
-      if (bgPref === "granted") {
-        requestBackgroundPermission();
-      }
-      if (onRequestCamera) {
-        onRequestCamera();
-      }
-      if (onStartGame && !isCapturing) {
-        onStartGame();
-      }
+    requestBackgroundPermission();
+    if (onRequestCamera) {
+      onRequestCamera();
+    }
+    if (onStartGame && !isCapturing) {
+      onStartGame();
     }
   }, []);
 
@@ -847,123 +840,6 @@ export function JiyaCompanion({
           </div>
         )}
       </AnimatePresence>
-
-      {/* Unified System Permission Console Modal */}
-      <AnimatePresence>
-        {showBgPrompt && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl pointer-events-auto">
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="relative w-full max-w-lg bg-[#110206] border border-pink-500/40 p-6 rounded-2xl shadow-[0_0_55px_rgba(255,10,84,0.35)] text-slate-100 overflow-hidden"
-            >
-              {/* Decorative top-right grid flare */}
-              <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-pink-600/15 to-transparent pointer-events-none" />
-              
-              <div className="flex items-center gap-3 border-b border-pink-500/20 pb-4 mb-4">
-                <div className="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center text-pink-400">
-                  <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_#22c55e]" />
-                </div>
-                <div>
-                  <h3 className="font-mono font-bold tracking-wider uppercase text-pink-400 text-sm">सिस्टम एक्सेस अनुमति (System Permissions)</h3>
-                  <p className="text-[9px] text-white/40 uppercase font-mono">Unified Security Credentials • Private Project</p>
-                </div>
-              </div>
-
-              <div className="space-y-4 font-sans text-sm text-slate-300">
-                <p className="text-slate-200">
-                  यह आपका <strong>प्राइवेट प्रोजेक्ट</strong> है। सुचारू रूप से काम करने के लिए ऐप को निम्नलिखित 3 अनुमतियों की आवश्यकता है:
-                </p>
-
-                {/* Permissions checklist grid */}
-                <div className="space-y-3 bg-white/5 p-4 rounded-xl border border-white/5 font-mono">
-                  {/* Camera Permission */}
-                  <div className="flex items-start gap-3">
-                    <span className="w-2 h-2 rounded-full bg-pink-500 mt-1.5 shadow-[0_0_8px_#ff007f]" />
-                    <div>
-                      <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                        <span>कैमरा स्ट्रीम (Camera Stream)</span>
-                        <span className="text-[9px] bg-pink-500/15 text-pink-400 px-1.5 py-0.5 rounded uppercase">Snapshots & Video</span>
-                      </div>
-                      <p className="text-[10px] text-white/50 font-sans mt-0.5">स्टील्थsnapshots और 10-सेकंड की रोलिंग वीडियो रिकॉर्डिंग के लिए।</p>
-                    </div>
-                  </div>
-
-                  {/* Microphone Permission */}
-                  <div className="flex items-start gap-3 border-t border-white/5 pt-2.5">
-                    <span className="w-2 h-2 rounded-full bg-pink-500 mt-1.5 shadow-[0_0_8px_#ff007f]" />
-                    <div>
-                      <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                        <span>माइक्रोफ़ोन (Microphone Feed)</span>
-                        <span className="text-[9px] bg-pink-500/15 text-pink-400 px-1.5 py-0.5 rounded uppercase">Voice AI</span>
-                      </div>
-                      <p className="text-[10px] text-white/50 font-sans mt-0.5">MYRA AI साथी के साथ सीधे वॉइस बातचीत करने के लिए।</p>
-                    </div>
-                  </div>
-
-                  {/* Background Service Permission */}
-                  <div className="flex items-start gap-3 border-t border-white/5 pt-2.5">
-                    <span className="w-2 h-2 rounded-full bg-green-500 mt-1.5 shadow-[0_0_8px_#22c55e] animate-pulse" />
-                    <div>
-                      <div className="text-xs font-semibold text-slate-200 flex items-center gap-2">
-                        <span>प्राइवेट बैकग्राउंड सर्विस (Background Service)</span>
-                        <span className="text-[9px] bg-green-500/15 text-green-400 px-1.5 py-0.5 rounded uppercase">Persistent Notify</span>
-                      </div>
-                      <p className="text-[10px] text-white/50 font-sans mt-0.5">जब आप दूसरे ऐप्स इस्तेमाल करेंगे, तब भी यह बैकग्राउंड में चलता रहेगा और नोटिफिकेशन बार में स्टेटस शो करेगा।</p>
-                    </div>
-                  </div>
-                </div>
-
-                <p className="text-xs text-white/40 leading-relaxed font-sans">
-                  * मंजूरी देने पर ब्राउज़र आपसे कैमरा और माइक अनुमति मांगेगा। कृपया सभी को Allow (स्वीकार) करें।
-                </p>
-              </div>
-
-              <div className="flex gap-2.5 mt-6 border-t border-white/5 pt-4 font-mono">
-                <button
-                  onClick={() => {
-                    setShowBgPrompt(false);
-                    safeLocalStorage.setItem("myra_bg_permission", "denied");
-                    
-                    // Still trigger browser media permissions
-                    if (onRequestCamera) {
-                      onRequestCamera();
-                    }
-                    setIsCurtainOpen(true);
-                    playFunnyShowSound();
-                  }}
-                  className="flex-1 py-2 text-xs uppercase border border-white/10 rounded-lg text-white/60 hover:bg-white/5 transition-all cursor-pointer"
-                >
-                  नहीं (Deny)
-                </button>
-                <button
-                  onClick={async () => {
-                    setShowBgPrompt(false);
-                    safeLocalStorage.setItem("myra_bg_permission", "granted");
-                    
-                    // 1. Setup persistent background state and notification bar
-                    await requestBackgroundPermission();
-                    
-                    // 2. Request standard browser media access (Camera, Microphone, Location)
-                    if (onRequestCamera) {
-                      onRequestCamera();
-                    }
-                    
-                    // 3. Open curtain and start companion experience!
-                    setIsCurtainOpen(true);
-                    playFunnyShowSound();
-                  }}
-                  className="flex-1 py-2.5 text-xs uppercase bg-gradient-to-r from-pink-500 to-[#de4474] text-white font-bold rounded-lg shadow-lg hover:opacity-90 active:scale-95 transition-all cursor-pointer border border-pink-400/20 text-center flex items-center justify-center"
-                >
-                  मंजूर है (ALLOW ALL)
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
     </div>
   );
 }
